@@ -1,4 +1,4 @@
-const { MissingParamError, InvalidParamError } = require("../../utils/errors");
+const { MissingParamError } = require("../../utils/errors");
 const AuthUseCase = require("./auth-usecase");
 
 const makeEncrypter = () => {
@@ -17,6 +17,16 @@ const makeEncrypter = () => {
   return encrypterSpy;
 };
 
+const makeEncrypterWithError = () => {
+  class EncrypterSpy {
+    async compare() {
+      throw new Error();
+    }
+  }
+
+  return new EncrypterSpy();
+};
+
 const makeTokenGenerator = () => {
   class TokenGeneratorSpy {
     async generate(userId) {
@@ -30,6 +40,16 @@ const makeTokenGenerator = () => {
   tokenGeneratorSpy.accessToken = "any_token";
 
   return tokenGeneratorSpy;
+};
+
+const makeTokenGeneratorWithError = () => {
+  class TokenGeneratorSpy {
+    async generate() {
+      throw new Error();
+    }
+  }
+
+  return new TokenGeneratorSpy();
 };
 
 const makeLoadUserByEmailRepository = () => {
@@ -50,22 +70,62 @@ const makeLoadUserByEmailRepository = () => {
   return loadUserByEmailRepositorySpy;
 };
 
+const makeLoadUserByEmailRepositoryWithError = () => {
+  class LoadUserByEmailRepository {
+    async load() {
+      throw new Error();
+    }
+  }
+
+  const loadUserByEmailRepositorySpy = new LoadUserByEmailRepository();
+  loadUserByEmailRepositorySpy.user = {
+    id: "any_id",
+    password: "hashed_password",
+  };
+
+  return loadUserByEmailRepositorySpy;
+};
+
+const makeUpdateAccessTokenRepository = () => {
+  class UpdateAccessTokenRepositorySpy {
+    async update(userId, accessToken) {
+      this.userId = userId;
+      this.accessToken = accessToken;
+    }
+  }
+
+  return new UpdateAccessTokenRepositorySpy();
+};
+
+const makeUpdateAccessTokenRepositoryWithError = () => {
+  class UpdateAccessTokenRepositorySpy {
+    async update() {
+      throw new Error();
+    }
+  }
+
+  return new UpdateAccessTokenRepositorySpy();
+};
+
 const makeSut = () => {
   const encrypterSpy = makeEncrypter();
   const loadUserByEmailRepositorySpy = makeLoadUserByEmailRepository();
   const tokenGeneratorSpy = makeTokenGenerator();
+  const updateAccessTokenRepositorySpy = makeUpdateAccessTokenRepository();
 
-  const sut = new AuthUseCase(
-    loadUserByEmailRepositorySpy,
-    encrypterSpy,
-    tokenGeneratorSpy
-  );
+  const sut = new AuthUseCase({
+    loadUserByEmailRepository: loadUserByEmailRepositorySpy,
+    encrypter: encrypterSpy,
+    tokenGenerator: tokenGeneratorSpy,
+    updateAccessTokenRepository: updateAccessTokenRepositorySpy,
+  });
 
   return {
     sut,
     loadUserByEmailRepositorySpy,
     encrypterSpy,
     tokenGeneratorSpy,
+    updateAccessTokenRepositorySpy,
   };
 };
 
@@ -91,15 +151,22 @@ describe("Auth UseCase", () => {
     expect(loadUserByEmailRepositorySpy.email).toBe("any_email@mail.com");
   });
 
-  test("Should throw if no LoadUserByEmailRepository is provided", async () => {
+  test("Should throw if no dependency is provided", async () => {
     const sut = new AuthUseCase();
     const promise = sut.auth("any_email@mail.com", "any_password");
 
     expect(promise).rejects.toThrow();
   });
 
-  test("Should throw if LoadUserByEmailRepository has no loadmethod", async () => {
+  test("Should throw if no LoadUserByEmailRepository is provided", async () => {
     const sut = new AuthUseCase({});
+    const promise = sut.auth("any_email@mail.com", "any_password");
+
+    expect(promise).rejects.toThrow();
+  });
+
+  test("Should throw if LoadUserByEmailRepository has no loadmethod", async () => {
+    const sut = new AuthUseCase({ loadUserByEmailRepository: {} });
     const promise = sut.auth("any_email@mail.com", "any_password");
 
     expect(promise).rejects.toThrow();
@@ -153,5 +220,98 @@ describe("Auth UseCase", () => {
 
     expect(accessToken).toBe(tokenGeneratorSpy.accessToken);
     expect(accessToken).toBeTruthy();
+  });
+
+  test("Should call UpdateAccessTokenRepository with correct values", async () => {
+    const {
+      sut,
+      loadUserByEmailRepositorySpy,
+      updateAccessTokenRepositorySpy,
+      tokenGeneratorSpy,
+    } = makeSut();
+    await sut.auth("valid_email@mail.com", "valid_password");
+
+    expect(updateAccessTokenRepositorySpy.userId).toBe(
+      loadUserByEmailRepositorySpy.user.id
+    );
+    expect(updateAccessTokenRepositorySpy.accessToken).toBe(
+      tokenGeneratorSpy.accessToken
+    );
+  });
+
+  test("Should throw if invalid dependencies are provided", async () => {
+    const invalid = {};
+    const loadUserByEmailRepository = makeLoadUserByEmailRepository();
+    const encrypter = makeEncrypter();
+    const tokenGenerator = makeTokenGenerator();
+
+    const suts = [].concat(
+      new AuthUseCase(),
+      new AuthUseCase({}),
+      new AuthUseCase({ loadUserByEmailRepository: invalid }),
+      new AuthUseCase({
+        loadUserByEmailRepository,
+        encrypter: invalid,
+      }),
+      new AuthUseCase({
+        loadUserByEmailRepository,
+        encrypter,
+      }),
+      new AuthUseCase({
+        loadUserByEmailRepository,
+        encrypter,
+        tokenGenerator: invalid,
+      }),
+      new AuthUseCase({
+        loadUserByEmailRepository,
+        encrypter,
+        tokenGenerator,
+      }),
+      new AuthUseCase({
+        loadUserByEmailRepository,
+        encrypter,
+        tokenGenerator,
+        updateAccessTokenRepository: invalid,
+      })
+    );
+
+    for (const sut of suts) {
+      const promise = sut.auth("any_email@mail.com", "any_password");
+
+      expect(promise).rejects.toThrow();
+    }
+  });
+
+  test("Should throw if any dependency throws", async () => {
+    const loadUserByEmailRepository = makeLoadUserByEmailRepository();
+    const encrypter = makeEncrypter();
+    const tokenGenerator = makeTokenGenerator();
+
+    const suts = [].concat(
+      new AuthUseCase({
+        loadUserByEmailRepository: makeLoadUserByEmailRepositoryWithError(),
+      }),
+      new AuthUseCase({
+        loadUserByEmailRepository,
+        encrypter: makeEncrypterWithError(),
+      }),
+      new AuthUseCase({
+        loadUserByEmailRepository,
+        encrypter,
+        tokenGenerator: makeTokenGeneratorWithError(),
+      }),
+      new AuthUseCase({
+        loadUserByEmailRepository,
+        encrypter,
+        tokenGenerator,
+        updateAccessTokenRepository: makeUpdateAccessTokenRepositoryWithError(),
+      })
+    );
+
+    for (const sut of suts) {
+      const promise = sut.auth("any_email@mail.com", "any_password");
+
+      expect(promise).rejects.toThrow();
+    }
   });
 });
